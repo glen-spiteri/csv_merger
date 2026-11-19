@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pavlovia CSV Merger</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --line: #dcdcd6; --accent: #2b5fa8; --accent-text: #ffffff;
+    --warn-bg: #fff4d6; --warn-text: #7a5300; --bad-bg: #fde4e1; --bad-text: #8a1f11;
+    --ok-text: #1f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1b1b1a; --panel: #252524; --text: #ececea; --muted: #a3a39d;
+      --line: #3a3a38; --accent: #7aa7ea; --accent-text: #10213a;
+      --warn-bg: #3d3216; --warn-text: #f3d48a; --bad-bg: #432019; --bad-text: #f5b2a7;
+      --ok-text: #8fd6a6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  p.lede { color: var(--muted); margin: 0 0 20px; }
+  .drop { display: block; border: 2px dashed var(--line); border-radius: 12px; background: var(--panel);
+          padding: 32px 16px; text-align: center; cursor: pointer; }
+  .drop.over { border-color: var(--accent); }
+  .drop strong { display: block; font-size: 1.05rem; margin-bottom: 4px; }
+  .drop span { color: var(--muted); }
+  input[type=file] { display: none; }
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 20px 0 8px; }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer;
+           background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: default; }
+  .stats { color: var(--muted); }
+  .tablewrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line);
+           white-space: nowrap; }
+  th { font-weight: 600; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .flag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: .8rem; }
+  .flag.warn { background: var(--warn-bg); color: var(--warn-text); }
+  .flag.bad { background: var(--bad-bg); color: var(--bad-text); }
+  .flag.ok { color: var(--ok-text); }
+  .note { color: var(--muted); font-size: .9rem; margin-top: 16px; }
+  label.inc { display: inline-flex; gap: 6px; align-items: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pavlovia CSV Merger</h1>
+  <p class="lede">Combine the one-file-per-participant CSVs from a Pavlovia download into a single
+    spreadsheet. Everything runs in your browser; no data is uploaded anywhere.</p>
+
+  <label class="drop" id="drop">
+    <strong>Drop your .csv files here, or click to choose them</strong>
+    <span>Tip: unzip the Pavlovia download first, open the folder, press Cmd+A (Ctrl+A) to select all files.</span>
+    <input type="file" id="pick" accept=".csv,text/csv" multiple>
+  </label>
+
+  <div class="bar">
+    <button id="dl" disabled>Download merged CSV</button>
+    <button id="clear" class="secondary" disabled>Clear</button>
+    <span class="stats" id="stats"></span>
+  </div>
+
+  <div class="tablewrap" id="wrap" hidden>
+    <table>
+      <thead><tr>
+        <th>Include</th><th>File</th><th>participant</th><th class="num">Rows</th>
+        <th class="num">Columns</th><th>Check</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <p class="note">Files are flagged when they have far fewer rows than most files (probably an
+    incomplete run where the participant closed the tab) or when the participant ID looks like a test
+    run. Flags are hints: decide using your own exclusion rules, and write down every file you drop
+    and why. Untick a file to leave it out of the merged CSV. Columns are matched by name, so files
+    with different columns still line up.</p>
+</main>
+<script>
+(function () {
+  var files = [];  // {name, header, rows, include}
+
+  function parseCSV(text) {
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    var out = [], row = [], field = '', i = 0, q = false, c;
+    while (i < text.length) {
+      c = text[i];
+      if (q) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+          q = false; i++; continue;
+        }
+        field += c; i++; continue;
+      }
+      if (c === '"') { q = true; i++; continue; }
+      if (c === ',') { row.push(field); field = ''; i++; continue; }
+      if (c === '\r') { i++; continue; }
+      if (c === '\n') { row.push(field); out.push(row); row = []; field = ''; i++; continue; }
+      field += c; i++;
+    }
+    if (field !== '' || row.length) { row.push(field); out.push(row); }
+    return out.filter(function (r) { return !(r.length === 1 && r[0] === ''); });
+  }
+
+  function csvCell(v) {
+    v = v == null ? '' : String(v);
+    return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  }
+
+  function median(a) {
+    var s = a.slice().sort(function (x, y) { return x - y; });
+    var m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  }
+
+  function participantOf(f) {
+    var j = f.header.indexOf('participant');
+    if (j < 0) return '';
+    for (var r = 0; r < f.rows.length; r++) if (f.rows[r][j]) return f.rows[r][j];
+    return '';
+  }
+
+  function render() {
+    var tb = document.getElementById('rows');
+    tb.textContent = '';
+    files.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    var med = files.length ? median(files.map(function (f) { return f.rows.length; })) : 0;
+    files.forEach(function (f) {
+      var tr = document.createElement('tr');
+      var pid = participantOf(f);
+      var flags = [];
+      if (f.rows.length < 0.8 * med) flags.push(['bad', 'Short file: incomplete run?']);
+      if (/test|pilot|debug|^$/i.test(pid)) flags.push(['warn', pid ? 'Looks like a test run' : 'No participant ID']);
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = f.include;
+      cb.addEventListener('change', function () { f.include = cb.checked; summary(); });
+      var td0 = document.createElement('td'); var lab = document.createElement('label');
+      lab.className = 'inc'; lab.appendChild(cb); td0.appendChild(lab); tr.appendChild(td0);
+      [[f.name, ''], [pid, ''], [f.rows.length, 'num'], [f.header.length, 'num']].forEach(function (x) {
+        var td = document.createElement('td'); td.textContent = x[0]; if (x[1]) td.className = x[1];
+        tr.appendChild(td);
+      });
+      var tdf = document.createElement('td');
+      if (!flags.length) { var s = document.createElement('span'); s.className = 'flag ok'; s.textContent = 'OK'; tdf.appendChild(s); }
+      flags.forEach(function (fl) {
+        var s = document.createElement('span'); s.className = 'flag ' + fl[0]; s.textContent = fl[1];
+        tdf.appendChild(s); tdf.appendChild(document.createTextNode(' '));
+      });
+      tr.appendChild(tdf);
+      tb.appendChild(tr);
+    });
+    document.getElementById('wrap').hidden = !files.length;
+    summary();
+  }
+
+  function summary() {
+    var inc = files.filter(function (f) { return f.include; });
+    var n = inc.reduce(function (s, f) { return s + f.rows.length; }, 0);
+    document.getElementById('stats').textContent = files.length
+      ? files.length + ' files loaded, ' + inc.length + ' included, ' + n + ' data rows in merged file'
+      : '';
+    document.getElementById('dl').disabled = !inc.length;
+    document.getElementById('clear').disabled = !files.length;
+  }
+
+  function addFiles(list) {
+    var pending = Array.prototype.filter.call(list, function (f) { return /\.csv$/i.test(f.name); });
+    var left = pending.length;
+    pending.forEach(function (file) {
+      var rd = new FileReader();
+      rd.onload = function () {
+        var rows = parseCSV(rd.result);
+        if (rows.length) {
+          files = files.filter(function (f) { return f.name !== file.name; });
+          files.push({ name: file.name, header: rows[0], rows: rows.slice(1), include: true });
+        }
+        if (--left === 0) render();
+      };
+      rd.readAsText(file);
+    });
+  }
+
+  function download() {
+    var inc = files.filter(function (f) { return f.include; });
+    var cols = ['source_file'];
+    ['participant', 'date'].forEach(function (c) {
+      if (inc.some(function (f) { return f.header.indexOf(c) >= 0; })) cols.push(c);
+    });
+    inc.forEach(function (f) { f.header.forEach(function (h) { if (h && cols.indexOf(h) < 0) cols.push(h); }); });
+    var lines = [cols.map(csvCell).join(',')];
+    inc.forEach(function (f) {
+      var idx = cols.map(function (c) { return c === 'source_file' ? -2 : f.header.indexOf(c); });
+      f.rows.forEach(function (r) {
+        lines.push(idx.map(function (j) { return csvCell(j === -2 ? f.name : (j >= 0 ? r[j] : '')); }).join(','));
+      });
+    });
+    var blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'merged_data.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  var drop = document.getElementById('drop');
+  document.getElementById('pick').addEventListener('change', function (e) { addFiles(e.target.files); e.target.value = ''; });
+  ['dragenter', 'dragover'].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
+  ['dragleave', 'drop'].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
+  drop.addEventListener('drop', function (e) { addFiles(e.dataTransfer.files); });
+  document.getElementById('dl').addEventListener('click', download);
+  document.getElementById('clear').addEventListener('click', function () { files = []; render(); });
+})();
+</script>
+</body>
+</html>
